@@ -1,0 +1,135 @@
+---
+title: "Shooting Data Report"
+output: pdf_document
+date: "2026-03-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r visible setup, message=FALSE}
+options(scipen=999)
+library(tidyverse)
+data <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+```
+
+# Exploratory data analysis
+
+```{r}
+head(data)
+summary(data)
+
+```
+
+# Data Cleaning
+
+## Tidying
+
+The data was formatted to have one incident per row, so, in that sense, it was already tidy and pivoting was not necessary.
+
+The column Lon_Lat appeared to be a duplication of the data in the columns Latitude and Longitude, so I got rid of it. Additionally, according to the City of New York website:
+
+[*https://data.cityofnewyork.us/Public-Safety/ARCHIVED_NYPD-Shooting-Incident-Data-Historic-/833y-fsy8/about_data*](https://data.cityofnewyork.us/Public-Safety/ARCHIVED_NYPD-Shooting-Incident-Data-Historic-/833y-fsy8/about_data){.uri}
+
+X_COORD_CD and Y_COORD_CD were coordinates based on a specific New York State mapping system, and, thus, also appeared to duplicate the latitude and longitude information provided.
+
+## Dealing with NAs
+
+I got rid of the columns LOC_OF_OCCUR_DESC and LOC_CLASSFCTN_DESC since each had over 25,000 NA entries. I also deleted the LOCATION_DESC, PERP_AGE_GROUP, PERP_SEX, and PERP_RACE columns, as those each had more than 10,000 NA entries once descriptions like "(null)" and "UNKNOWN" were included in the total. Beyond that, there were a handful of NAs or unknown values in other columns, but I elected to keep the rest intact and deal with the NAs later if needed.
+
+## Making data more useful and readbale
+
+I changed the datatype of the OCCUR_DATE to a date rather than a character and made other column values into factors. Also, I recoded the data in the JURISDICTION_CODE column to make it more readable according to the information found on the City of NY website given above. (0 = Patrol, 1 = Transit, and 2 = Housing)
+
+```{r cleaning}
+data <- data %>%
+  select(-LOC_OF_OCCUR_DESC, -LOC_CLASSFCTN_DESC, -LOCATION_DESC, -PERP_AGE_GROUP, 
+         -PERP_SEX, -PERP_RACE, -X_COORD_CD, -Y_COORD_CD, -Lon_Lat) %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE), 
+         JURISDICTION_CODE = recode(JURISDICTION_CODE, 
+                                    "0" = "Patrol", "1" = "Transit", "2" = "Housing"),
+         across(c(BORO, VIC_AGE_GROUP, VIC_SEX, VIC_RACE, JURISDICTION_CODE), as.factor)) 
+  
+head(data)
+
+
+```
+
+# Visualization
+
+I wanted to examine the relationship between certain geographic regions of New York and numbers of shootings and murders that took place in those places. I was also interested to see if certain demographic details like the victim's sex, race, and age were correlated with the frequency of murders and shootings. If the demographic data on the perpetrators were more complete, that would have also been interesting to look at, but given the number of NAs and unknowns in those columns, I decided to get rid of them, as noted above.
+
+```{r borough graph}
+data %>%
+  ggplot(aes(x=BORO, fill=STATISTICAL_MURDER_FLAG)) +
+  geom_bar() +
+  theme_bw() +
+  labs(x="", y="Count", fill="Murdered", title="Shootings by Borough")
+
+```
+
+```{r sex graph}
+data %>%
+  filter(data$VIC_SEX != "U") %>%
+  ggplot(aes(x=VIC_SEX, fill=STATISTICAL_MURDER_FLAG)) +
+  geom_bar() +
+  theme_bw() +
+  labs(x="", y="Count", fill="Murdered", title="Shootings by Victim Sex")
+```
+
+```{r race graph}
+data %>%
+  filter(data$VIC_RACE != "UNKNOWN") %>%
+  ggplot(aes(y=VIC_RACE, fill=STATISTICAL_MURDER_FLAG)) +
+  geom_bar() +
+  theme_bw() +
+  labs(x="Count", y="", fill="Murdered", title="Shootings by Victim Race/Ethnicity")
+```
+
+```{r age graph}
+data %>%
+  filter(data$VIC_AGE_GROUP != "UNKNOWN" & data$VIC_AGE_GROUP != "1022") %>%
+  ggplot(aes(x=VIC_AGE_GROUP, fill=STATISTICAL_MURDER_FLAG)) +
+  geom_bar() +
+  theme_bw() +
+  labs(x="", y="Count", fill="Murdered", title="Shootings by Victim Age")
+```
+
+# Modeling
+
+Based on my initial visualizations, it seemed like the frequency of shootings correlated with both different geographic locations and victim demographics. From there, I became interested in seeing if any of those factors were correlated with whether the NYPD flagged shootings as murders. I started by filtering out unknown values that I discovered while doing the visualizations. Then, I created a logistic regression model to explore that relationship.
+
+```{r model}
+model_data <- data %>%
+  filter(data$VIC_AGE_GROUP != "UNKNOWN" & data$VIC_AGE_GROUP != "1022" & 
+           data$VIC_SEX != "U" & data$VIC_RACE != "UNKNOWN")
+
+
+model <- glm(STATISTICAL_MURDER_FLAG ~ BORO + VIC_AGE_GROUP + VIC_SEX + VIC_RACE,
+             data = model_data, family = "binomial")
+
+summary(model)
+
+#List of odds ratios
+exp(coef(model))
+
+```
+
+# Analysis
+
+There were many correlations that became apparent from the visualizations prepared for this report. Shootings were more frequent in the Bronx and Brooklyn than they were in the other boroughs of New York, for example. There could be many reasons for this, from the population numbers of those respective boroughs to socioeconomic factors that may drive crime rates up. Since I didn't have any access to population or demographic information for the boroughs as a whole, it's impossible to draw any conclusions about this disparity. It could be an interesting future avenue for study, though. Additionally, there were several demographic factors that were more highly-correlated with the number of shootings such as the victim being male, Black, or 18-44 years old. All of those demographic factors are likely subject to the same societal pressures that I mentioned earlier, however. Different New York boroughs have very different makeups, in terms of income, race/ethnicity, age, etc., and so it's impossible to fully separate demographic factors from geography.
+
+Furthermore, the logistic regression model revealed some interesting information about the likelihood of a shooting getting flagged as a murder in the database. Although Staten Island had the fewest shootings overall, shootings in that borough were 1.026 times more likely to be flagged as murders than in the Bronx, which R used as its baseline for comparison. Additionally, even though men were the victims of many more shootings than women were, the odds of them being murder victims were lower than they were for women. Perhaps most interestingly, the odds of a shooting getting flagged as a murder increased with the victim's age: a shooting involving a victim whose age was 65+ was 2.707 times more likely to be flagged as a murder than was a shooting involving a victim who was under 18 years old. One factor that the regression model was not helpful at illuminating was the relationship between race/ethnicity and the odds of a shooting being flagged as a murder. R used American Indian/Alaska Native as its baseline for comparison, and since there were so few shootings involving that population, the odds ratios were not very useful. (Since I'm relatively new to regressions in R, I couldn't figure out how to change the value R was using for comparison, but I look forward to learning how to fix that in future classes.)
+
+# Sources of Bias
+
+There were many potential sources of bias that might affect this report, not least of which involve my own biases. For my entire life, I've watched movies, TV shows, and TV news involving New York, which informs my understanding of the crime and different socioeconomic factors present in different boroughs of the city. I tried to guard against my assumptions as much as possible, even as they likely influenced what aspects of the data I chose to investigate.
+
+Additionally, there may have been bias involved in the initial data collection for this report. Since there were some unknown values for the victim's age, race, sex in the dataset, police officers responding to shootings were likely not able to talk to all of the victims directly, and the details may have come from witnesses or the police officers themselves. One would hope that, if an officer wasn't sure about the victim's demographic details, they would have been marked as "unknown," but there remains the possibility that some inference was used.
+
+Finally, certain small sample sizes made analysis difficult. For example, the number shootings whose victims were white/non-Hispanic, Asian/Pacific Islander, and American Indian/Alaska Native were quite small, leading to undercoverage bias and lending doubt about what sort of conclusions can be drawn regarding those populations.
+
+```{r session info}
+sessionInfo()
+```
